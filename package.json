@@ -4,6 +4,8 @@
   "description": "",
   "main": "index.js",
   "scripts": {
+    "start": "node ./bin/www",
+    "dev": "nodemon --ignore config/config.json --ignore logs ./bin/www",
     "dev-win": "nodemon --ignore config/config.json --ignore logs ./bin/www",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
