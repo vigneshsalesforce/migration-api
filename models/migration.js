@@ -1,54 +1,47 @@
 const mongoose = require('mongoose');
 
 const migrationSchema = new mongoose.Schema({
-  salesforceObject: {
-    type: String,
-    required: true,
-  },
-  salesforceObjectName: {
-    type: String,
-    required: true
-  },
-  totalFiles: {
-    type: Number,
-    default: 0
-  },
-  migratedFiles: {
-    type: Number,
-    default: 0
-  },
-  status: {
-    type: String,
-    enum: ['pending', 'inProgress', 'completed', 'failed'],
-    default: 'pending',
-  },
-  startTime: {
-      type: Date
-  },
-  endTime: {
-    type: Date
-  },
-  createdAt: {
-    type: Date,
-    default: Date.now,
-  },
-  updatedAt: {
-    type: Date,
-    default: Date.now
-  },
-  salesforceAuth:{
-      type: Object
-  },
-    sharepointAuth: {
-        type: Object
-    }
-});
-
-// Add a pre-save hook to update the updatedAt field
-migrationSchema.pre('save', function(next) {
-  this.updatedAt = new Date();
-  next();
-});
+    salesforceObject: {
+        type: String,
+        required: true,
+    },
+    relatedObjects: [{
+        type: String,
+    }],
+    source: {
+         type: mongoose.Schema.Types.ObjectId,
+         ref: 'Source',
+        required: true,
+    },
+    destination: {
+       type: mongoose.Schema.Types.ObjectId,
+          ref: 'Source',
+        required: true,
+    },
+    startTime: {
+        type: Date,
+    },
+    endTime: {
+        type: Date,
+    },
+    totalFiles: {
+        type: Number,
+        default: 0,
+    },
+    migratedFiles: {
+        type: Number,
+        default: 0,
+    },
+   progress: {
+        type: Number,
+        default: 0
+    },
+    status: {
+        type: String,
+        enum: ['inProgress', 'completed', 'failed', 'paused', 'cancelled', 'partial success'],
+        default: 'inProgress',
+    },
+}, { timestamps: true });
 
 const Migration = mongoose.model('Migration', migrationSchema);
 

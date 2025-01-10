@@ -21,15 +21,16 @@ async function ensureDownloadDirExists() {
     }
 }
 
-
 async function startSalesforceMigration(objectName, migrationRecord, req) {
     await ensureDownloadDirExists();
+    let fileDetails = [];
     try {
         const { access_token, instance_url } = migrationRecord.salesforceAuth;
         const { _id: migrationId } = migrationRecord;
-      const { Migration } = req.models;
+        const { Migration } = req.models;
         const query = `SELECT Id, Name FROM ${objectName}`;
-        const headers = { 'Authorization': `Bearer ${access_token}`,
+        const headers = {
+            'Authorization': `Bearer ${access_token}`,
             'Content-Type': 'application/json',
             'Accept': 'application/json'
         };
@@ -43,25 +44,38 @@ async function startSalesforceMigration(objectName, migrationRecord, req) {
         }
         const recordIds = queryResponse.records.map(record => record.Id);
 
-        const fileDetails = await fetchFileDetails(recordIds, access_token, instance_url, objectName, req);
+         fileDetails = await fetchFileDetails(recordIds, access_token, instance_url, objectName, req);
 
         logger.info(`File Ids fetched for migration id: ${migrationId} . Total files: ${fileDetails.length}`);
         await Migration.findByIdAndUpdate(migrationId, { totalFiles: fileDetails.length });
 
         // Fetch Files and Process (Batch Processing)
         await processFiles(fileDetails, access_token, instance_url, migrationId, objectName, req);
+
+         const migration = await Migration.findById(migrationId);
+        let migrationStatus = 'completed';
+          if (migration && migration.migratedFiles !== migration.totalFiles) {
+            migrationStatus = 'partial success'
+        }
+
         logger.info(`All files processed for migration id: ${migrationId}`);
-        await Migration.findByIdAndUpdate(migrationId, { status: 'completed', endTime: new Date() });
+        await Migration.findByIdAndUpdate(migrationId, { status: migrationStatus, endTime: new Date(),  totalFiles: fileDetails.length });
         // Send completion message via WebSocket
-        wss.clients.forEach((client) => {
+         wss.clients.forEach((client) => {
         if (client.readyState === WebSocket.OPEN) {
           client.send(JSON.stringify({ type: 'complete', migrationId }));
         }
       });
     } catch (error) {
         logger.error(`Salesforce migration failed for object ${objectName}`, error);
-      const { Migration } = req.models;
+        const { Migration } = req.models;
         await Migration.findByIdAndUpdate(migrationRecord._id, { status: 'failed', endTime: new Date() });
+        // Send error message via WebSocket
+         wss.clients.forEach((client) => {
+        if (client.readyState === WebSocket.OPEN) {
+          client.send(JSON.stringify({ type: 'error', migrationId , message: error.message }));
+        }
+      });
         throw error;
     }
 }
@@ -137,21 +151,24 @@ async function fetchRelatedObjectRecords(recordIds, access_token, instance_url, 
 
 async function processFiles(fileDetails, access_token, instance_url, migrationId, objectName, req) {
     const batches = [];
-     for (let i = 0; i < fileDetails.length; i += BATCH_SIZE) {
-            batches.push(fileDetails.slice(i, i + BATCH_SIZE));
-        }
+    for (let i = 0; i < fileDetails.length; i += BATCH_SIZE) {
+        batches.push(fileDetails.slice(i, i + BATCH_SIZE));
+    }
     let processedFiles = 0;
     for (const batch of batches) {
         await processFileBatch(batch, access_token, instance_url, migrationId, objectName, req);
         processedFiles += batch.length;
         const progress = (processedFiles / fileDetails.length) * 100;
+         const { Migration } = req.models;
+          await Migration.findByIdAndUpdate(migrationId, { progress });
         wss.clients.forEach((client) => {
             if (client.readyState === WebSocket.OPEN) {
               client.send(JSON.stringify({
                 type: 'progress',
                 progress,
                 totalFiles: fileDetails.length,
-                processedFiles
+                processedFiles,
+                 migrationId
               }));
             }
         });
@@ -160,29 +177,56 @@ async function processFiles(fileDetails, access_token, instance_url, migrationId
 
 async function processFileBatch(fileDetails, access_token, instance_url, migrationId, objectName, req) {
     try {
-        let completedCount = 0;
-        const batchPromises = fileDetails.map(async (fileDetail) => {
+      const { File } = req.models;
+      const batchPromises = fileDetails.map(async (fileDetail) => {
             try {
                 const fileData = await fetchFileContent(fileDetail.fileId, access_token, instance_url, req);
+              const file = await File.create({
+                  migration: migrationId,
+                  name: fileDetail.title,
+                   size: fileData.fileData ? fileData.fileData.length : 0,
+                    linkedEntityId: fileDetail.linkedEntityId
+                });
                 await saveFileLocally(fileData, fileDetail, access_token, instance_url, migrationId, objectName, req);
-                await updateMigratedFileCount(migrationId, req);
-                completedCount++;
+                  await File.findByIdAndUpdate(file._id, { status: 'completed' });
+                 await updateMigratedFileCount(migrationId, req);
                 wss.clients.forEach((client) => {
                     if (client.readyState === WebSocket.OPEN) {
                         client.send(JSON.stringify({
                             type: 'fileProgress',
                             fileName: fileDetail.title,
+                             fileId: file._id,
                             fileSize: fileData.fileData ? fileData.fileData.length : 0,
-                            processedFiles: completedCount,
-                            totalFiles: fileDetails.length
+                             status: 'completed',
+                            migrationId
                         }));
                     }
                 });
                 logger.info(`File fetched and saved locally with id : ${fileDetail.fileId} for migration id ${migrationId}`)
             } catch (error) {
-                logger.error(`Error processing file with id: ${fileDetail.fileId}, migration id: ${migrationId}: ${error.message}`);
-           }
+                 logger.error(`Error processing file with id: ${fileDetail.fileId}, migration id: ${migrationId}: ${error.message}`);
+                 const file = await File.create({
+                     migration: migrationId,
+                     name: fileDetail.title,
+                      linkedEntityId: fileDetail.linkedEntityId,
+                     status: 'failed',
+                    error: error.message
+                  });
 
+                 wss.clients.forEach((client) => {
+                     if (client.readyState === WebSocket.OPEN) {
+                         client.send(JSON.stringify({
+                             type: 'fileProgress',
+                             fileName: fileDetail.title,
+                             fileId: file._id,
+                             fileSize: 0,
+                              status: 'failed',
+                             migrationId,
+                              error: error.message
+                         }));
+                     }
+                 });
+            }
        });
         await Promise.allSettled(batchPromises);
         logger.info(`Files from batch processed for migration id: ${migrationId}`)
@@ -296,7 +340,6 @@ async function updateMigratedFileCount(migrationId, req) {
        throw error;
    }
 }
-
 
 module.exports = {
    startSalesforceMigration,

@@ -1,37 +1,37 @@
 const logger = require('../logger/logger');
 
 const getSalesforceAuthDetails = async (req) => {
+    const { Source } = req.models;
     try {
-        const { Source } = req.models;
-        const salesforceAuth = await Source.findOne({ type: 'salesforce' }).sort({ updatedAt: -1 }).lean();
-        if (!salesforceAuth) {
-            logger.error("Unable to retrieve salesforce auth details");
-            return null;
+        const salesforceAuth = await Source.findOne({ type: 'salesforce', active: true }).lean();
+         if (!salesforceAuth) {
+           logger.error("No salesforce credentials found");
+             return null
         }
-        return salesforceAuth
+        return salesforceAuth;
     } catch (error) {
-        logger.error('Error fetching salesforce auth details:', error);
-        throw new Error("Error fetching salesforce auth details");
+         logger.error("Error fetching salesforce credentials", error);
+       throw error;
     }
-};
 
+}
 
 const getSharepointAuthDetails = async (req) => {
+    const { Source } = req.models;
     try {
-        const { Source } = req.models;
-        const sharepointAuth = await Source.findOne({ type: 'sharepoint' }).sort({ updatedAt: -1 }).lean();
+        const sharepointAuth = await Source.findOne({ type: 'sharepoint', active: true }).lean();
         if (!sharepointAuth) {
-            logger.error("Unable to retrieve sharepoint auth details");
+             logger.error("No sharepoint credentials found");
             return null
         }
         return sharepointAuth;
     } catch (error) {
-        logger.error('Error fetching sharepoint auth details:', error);
-        throw new Error("Error fetching sharepoint auth details");
+        logger.error("Error fetching sharepoint credentials", error);
+         throw error;
     }
-};
+}
 
 module.exports = {
     getSalesforceAuthDetails,
-    getSharepointAuthDetails,
+    getSharepointAuthDetails
 };
