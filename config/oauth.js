@@ -25,8 +25,8 @@ const {
     clientSecret: SHAREPOINT_CLIENT_SECRET,
     redirectUri: SHAREPOINT_REDIRECT_URI,
     tenantId: SHAREPOINT_TENANT_ID,
-    authorizeUrl: `${API_BASE_URL_SHAREPOINT}/${SHAREPOINT_TENANT_ID}/oauth2/v2.0/authorize`,
-    tokenUrl: `${API_BASE_URL_SHAREPOINT}/${SHAREPOINT_TENANT_ID}/oauth2/v2.0/token`
+    authorizeUrl: `https://login.microsoftonline.com/${SHAREPOINT_TENANT_ID}/oauth2/v2.0/authorize`,
+    tokenUrl: `https://login.microsoftonline.com/${SHAREPOINT_TENANT_ID}/oauth2/v2.0/token`
   };
   
   function generateAuthURL(provider) {
@@ -49,8 +49,6 @@ const {
   }
   
   async function getToken(provider, code) {
-    console.log('provider', provider);
-    console.log('code', code);
       let tokenUrl = null;
       let clientSecret = null;
       let clientId = null;
@@ -117,11 +115,33 @@ const {
       throw new Error(`Failed to fetch refresh token for ${provider}`)
     }
   }
+
+  async function fetchSharepointSiteUrl (accessToken) {
+    try {
+         const response = await axios.get(`https://graph.microsoft.com/v1.0/sites?search=*`, {
+          headers: {
+               'Authorization': `Bearer ${accessToken}`,
+             },
+          });
+          logger.info('response', response.data);
+         if (response.data && response.data.value && response.data.value.length > 0) {
+               const siteUrl = response.data.value[0].webUrl;
+              return siteUrl;
+          } else {
+              throw new Error('No SharePoint site found')
+        }
+
+    } catch (error) {
+      logger.error('Error fetching SharePoint site url', error);
+     throw new Error('Error fetching SharePoint site url:' + error.message);
+    }
+ }
   
   module.exports = {
       salesforceConfig,
       sharepointConfig,
       generateAuthURL,
       getToken,
-      getRefreshToken
+      getRefreshToken,
+      fetchSharepointSiteUrl,
   };

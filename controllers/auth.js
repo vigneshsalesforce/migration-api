@@ -30,10 +30,13 @@ const fetchToken = async (req, res) => {
         const { Source } = req.models;
         let migration = await Source.findOne({ type: provider });
         if (!migration) {
-            migration = await Source.create({ name: provider,type: provider, ...token, active: true });
+            migration = await Source.create({ name: provider,type: provider, ...token, metadata: { siteUrl: token.siteUrl}, active: true });
+
+            //migration = await Source.create({ name: provider,type: provider, ...token, active: true });
         } else {
             Object.assign(migration, token);
             migration.active = true;
+            migration.metadata = { siteUrl: token.siteUrl };
             await migration.save();
         }
         res.status(200).send({ success: true });

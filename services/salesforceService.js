@@ -3,10 +3,12 @@ const logger = require('../logger/logger');
 const fs = require('fs').promises;
 const path = require('path');
 const { SALESFORCE_API_VERSION } = require('../constants/appConstants');
+const { PORT } = require("../constants/envConstants");
 const { makeApiRequest } = require('../utils/apiHelper');
-
+const { saveFileToSharePoint, getSharePointAccessToken } = require('./sharepointService');
+const {getSharepointAuthDetails } = require('./migrationService')
+const socketManager = require('../utils/socket-manager');
 const WebSocket = require('ws');
-const wss = new WebSocket.Server({ port: 5447 });
 
 const BATCH_SIZE = 5;
 const BASE_LOCAL_FILE_PATH = path.join(__dirname, '../../Download');
@@ -26,7 +28,7 @@ async function startSalesforceMigration(objectName, migrationRecord, req) {
     let fileDetails = [];
     try {
         const { access_token, instance_url } = migrationRecord.salesforceAuth;
-        const { _id: migrationId } = migrationRecord;
+        const { _id: migrationId, relatedObjects  } = migrationRecord;
         const { Migration } = req.models;
         const query = `SELECT Id, Name FROM ${objectName}`;
         const headers = {
@@ -50,7 +52,7 @@ async function startSalesforceMigration(objectName, migrationRecord, req) {
         await Migration.findByIdAndUpdate(migrationId, { totalFiles: fileDetails.length });
 
         // Fetch Files and Process (Batch Processing)
-        await processFiles(fileDetails, access_token, instance_url, migrationId, objectName, req);
+        await processFiles(fileDetails, access_token, instance_url, migrationId, objectName,relatedObjects,req);
 
          const migration = await Migration.findById(migrationId);
         let migrationStatus = 'completed';
@@ -61,7 +63,7 @@ async function startSalesforceMigration(objectName, migrationRecord, req) {
         logger.info(`All files processed for migration id: ${migrationId}`);
         await Migration.findByIdAndUpdate(migrationId, { status: migrationStatus, endTime: new Date(),  totalFiles: fileDetails.length });
         // Send completion message via WebSocket
-         wss.clients.forEach((client) => {
+         socketManager.wss.clients.forEach((client) => {
         if (client.readyState === WebSocket.OPEN) {
           client.send(JSON.stringify({ type: 'complete', migrationId }));
         }
@@ -71,7 +73,7 @@ async function startSalesforceMigration(objectName, migrationRecord, req) {
         const { Migration } = req.models;
         await Migration.findByIdAndUpdate(migrationRecord._id, { status: 'failed', endTime: new Date() });
         // Send error message via WebSocket
-         wss.clients.forEach((client) => {
+         socketManager.wss.clients.forEach((client) => {
         if (client.readyState === WebSocket.OPEN) {
           client.send(JSON.stringify({ type: 'error', migrationId , message: error.message }));
         }
@@ -129,7 +131,7 @@ async function fetchRelatedObjectRecords(recordIds, access_token, instance_url, 
         'Content-Type': 'application/json',
         'Accept': 'application/json'
     };
-          const relatedObjects = ['Contact', 'Case', 'Opportunity']; // Add related objects as needed
+          const {relatedObjects} = req.body; // Add related objects as needed
           const relatedObjectRecordIds = []
           for (const relatedObject of relatedObjects) {
                 const soqlQuery = `SELECT Id from ${relatedObject} where AccountId IN ('${recordIds.join("','")}')`;
@@ -149,19 +151,19 @@ async function fetchRelatedObjectRecords(recordIds, access_token, instance_url, 
 }
 
 
-async function processFiles(fileDetails, access_token, instance_url, migrationId, objectName, req) {
+async function processFiles(fileDetails, access_token, instance_url, migrationId, objectName,relatedObjects, req) {
     const batches = [];
     for (let i = 0; i < fileDetails.length; i += BATCH_SIZE) {
         batches.push(fileDetails.slice(i, i + BATCH_SIZE));
     }
     let processedFiles = 0;
     for (const batch of batches) {
-        await processFileBatch(batch, access_token, instance_url, migrationId, objectName, req);
+        await processFileBatch(batch, access_token, instance_url, migrationId, objectName,relatedObjects, req);
         processedFiles += batch.length;
         const progress = (processedFiles / fileDetails.length) * 100;
          const { Migration } = req.models;
           await Migration.findByIdAndUpdate(migrationId, { progress });
-        wss.clients.forEach((client) => {
+        socketManager.wss.clients.forEach((client) => {
             if (client.readyState === WebSocket.OPEN) {
               client.send(JSON.stringify({
                 type: 'progress',
@@ -175,7 +177,7 @@ async function processFiles(fileDetails, access_token, instance_url, migrationId
     }
 }
 
-async function processFileBatch(fileDetails, access_token, instance_url, migrationId, objectName, req) {
+async function processFileBatch(fileDetails, access_token, instance_url, migrationId, objectName, relatedObjects, req) {
     try {
       const { File } = req.models;
       const batchPromises = fileDetails.map(async (fileDetail) => {
@@ -187,10 +189,12 @@ async function processFileBatch(fileDetails, access_token, instance_url, migrati
                    size: fileData.fileData ? fileData.fileData.length : 0,
                     linkedEntityId: fileDetail.linkedEntityId
                 });
-                await saveFileLocally(fileData, fileDetail, access_token, instance_url, migrationId, objectName, req);
+                await saveFileLocally(fileData, fileDetail, access_token, instance_url, migrationId, objectName,relatedObjects, req);
+                const sharepoint = getSharepointAuthDetails(req);
+                //await saveFileToSharePoint(fileData, fileDetail, sharepoint.access_token, migrationId, objectName, relatedObjects, await getObjectName(fileDetail.linkedEntityId, access_token, instance_url, req));
                   await File.findByIdAndUpdate(file._id, { status: 'completed' });
                  await updateMigratedFileCount(migrationId, req);
-                wss.clients.forEach((client) => {
+                socketManager.wss.clients.forEach((client) => {
                     if (client.readyState === WebSocket.OPEN) {
                         client.send(JSON.stringify({
                             type: 'fileProgress',
@@ -213,7 +217,7 @@ async function processFileBatch(fileDetails, access_token, instance_url, migrati
                     error: error.message
                   });
 
-                 wss.clients.forEach((client) => {
+                 socketManager.wss.clients.forEach((client) => {
                      if (client.readyState === WebSocket.OPEN) {
                          client.send(JSON.stringify({
                              type: 'fileProgress',
@@ -269,7 +273,7 @@ async function fetchFileContent(fileId, access_token, instance_url, req) {
 }
 
 
-async function saveFileLocally(fileData, fileDetail, access_token, instance_url, migrationId, objectName, req) {
+async function saveFileLocally(fileData, fileDetail, access_token, instance_url, migrationId, objectName, relatedObjects, req) {
     try {
         const baseDir = path.join(BASE_LOCAL_FILE_PATH, `${migrationId}`);
         let objectDir = path.join(baseDir, objectName);
@@ -281,18 +285,14 @@ async function saveFileLocally(fileData, fileDetail, access_token, instance_url,
              linkedObjectName = await getObjectName(fileDetail.linkedEntityId, access_token, instance_url, req);
        }
 
-       if (linkedObjectName === 'Contact') {
-           objectDir = path.join(baseDir, objectName, 'contact_files', linkedEntityId);
-       } else if (linkedObjectName === 'Case') {
-           objectDir = path.join(baseDir, objectName, 'case_files', linkedEntityId);
-        }  else if (linkedObjectName === 'Opportunity') {
-          objectDir = path.join(baseDir, objectName, 'opportunity_files', linkedEntityId);
-        }  else if(linkedEntityId) {
-             objectDir = path.join(baseDir, objectName, 'Account_files',linkedEntityId)
-        } else {
-              objectDir = path.join(baseDir, objectName, `${objectName.toLowerCase()}_files`);
-        }
-
+       if (linkedObjectName && relatedObjects && relatedObjects.includes(linkedObjectName)) {
+        objectDir = path.join(baseDir, objectName, `${linkedObjectName.toLowerCase()}_files`, linkedEntityId);
+    }
+   else if(linkedEntityId) {
+        objectDir = path.join(baseDir, objectName, `${linkedObjectName.toLowerCase()}_files`,linkedEntityId)
+    } else {
+          objectDir = path.join(baseDir, objectName, `${objectName.toLowerCase()}_files`);
+    }
 
         // Ensure base directory exists
         await fs.mkdir(baseDir, { recursive: true });

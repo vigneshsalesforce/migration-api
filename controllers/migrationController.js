@@ -18,7 +18,7 @@ const getActiveMigrations = async (req, res) => {
 };
 
 const startMigration = async (req, res) => {
-    const { selectedObject } = req.body;
+    const { selectedObject, relatedObjects } = req.body;
     const objectName = selectedObject;
     if (!objectName) {
         return res.status(400).send({ error: 'Salesforce object name is required.' })
@@ -38,7 +38,7 @@ const startMigration = async (req, res) => {
         // Step 2: Create Migration record in MongoDB
         const newMigration = await  Migration.create({
           salesforceObject: objectName,
-          relatedObjects: ['Contact', 'Case'], // Hardcoded related objects
+          relatedObjects: relatedObjects || [],
           source: salesforceSource._id,
           destination : sharepointSource._id,
           status: 'inProgress',

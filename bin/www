@@ -7,7 +7,7 @@
 const {app, initializeApp} = require('../app');
 const debug = require('debug')('salesforce-sharepoint-migration-backend:server');
 const http = require('http');
-//const socketManager = require('../utils/socket-manager');
+const socketManager = require('../utils/socket-manager');
 /**
  * Get port from environment and store in Express.
  */
@@ -28,7 +28,7 @@ const server = http.createServer(app);
 async function startServer() {
   try {
       await initializeApp();
-      // socketManager.init(server);
+      socketManager.init(server);
       server.listen(port);
       server.on('error', onError);
       server.on('listening', onListening);
